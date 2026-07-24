@@ -69,9 +69,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Mount or unmount a project from /skaprojects into the current user's home directory"
     )
-    parser.add_argument("option", choices=["--mount", "--unmount"], help="Action to perform")
-    parser.add_argument("project_name", help="Name of the project to mount or unmount")
+    parser.add_argument("project_name", nargs="?", help="Name of the project to mount or unmount")
+    parser.add_argument("--mount", dest="mount_flag", action="store_true", help="Mount the project")
+    parser.add_argument("--unmount", dest="unmount_flag", action="store_true", help="Unmount the project")
     args = parser.parse_args()
+
+    if args.mount_flag and args.unmount_flag:
+        parser.error("--mount and --unmount are mutually exclusive")
+
+    if not args.mount_flag and not args.unmount_flag:
+        parser.error("one of --mount or --unmount is required")
+
+    if args.project_name is None:
+        parser.error("project_name is required")
+
+    option = "--mount" if args.mount_flag else "--unmount"
+    project_name = args.project_name
 
     if os.geteuid() != 0:
         log_error("Please run this script with sudo or as root.")
@@ -104,7 +117,7 @@ def main() -> int:
     try:
         vp_properties = get_vospace_properties(
             tokens["iam_access_token"],
-            args.project_name,
+            project_name,
             os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL"),
         )
         creator = vp_properties.get("ivo://ivoa.net/vospace/core#creator", "")
@@ -125,10 +138,10 @@ def main() -> int:
     print(f"Resolved group GID: {group_gid}")
 
     sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
-    target_dir = Path("/home") / sudo_user / "projects" / args.project_name
-    source_dir = Path("/skaprojects") / args.project_name
+    target_dir = Path("/home") / sudo_user / "projects" / project_name
+    source_dir = Path("/skaprojects") / project_name
 
-    if args.option == "--mount":
+    if option == "--mount":
         if is_mountpoint(target_dir):
             message = (
                 f"Error: {target_dir} is already mounted; aborting to avoid cyclic mounts."

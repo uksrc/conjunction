@@ -13,16 +13,17 @@ import re
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional, Tuple
 import requests
 from xml.etree import ElementTree as ET
 
 
-USER_PROFILE_ENDPOINT = "https://iam.srcnet.skao.int/api/v1/userinfo"
+USER_PROFILE_ENDPOINT = os.environ.get("CONJUNCTION_IAM_USERINFO_URL", "https://ska-iam.stfc.ac.uk/userinfo")
 DEFAULT_VP_SPACE_BASE_URL = "https://src.canfar.net/cavern/nodes/projects"
 
 
 # Authentication endpoints
-AUTHN_BASE_URL = "https://authn.srcnet.skao.int/api/v1"
+AUTHN_BASE_URL = os.environ.get("CONJUNCTION_AUTHN_BASE_URL", "https://ska-iam.stfc.ac.uk")
 DATA_MANAGEMENT = "data-management-api"
 SITE_CAPABILITIES = "site-capabilities-api"
 
@@ -95,12 +96,35 @@ def get_user_profile(access_token: str) -> dict[str, str]:
         raise OAuth2AuthenticationError(f"Failed to fetch user profile: {exc}")
 
 
+def get_user_profile_alt(access_token: str) -> dict[str, str]:
+    """Fallback profile lookup for environments that expose the IAM account API at a different base URL."""
+    try:
+        response = requests.get(
+            f"{AUTHN_BASE_URL.rstrip('/')}/account/me",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise OAuth2AuthenticationError("Unexpected user profile response format")
+        return payload
+    except requests.exceptions.RequestException as exc:
+        raise OAuth2AuthenticationError(f"Failed to fetch user profile from fallback endpoint: {exc}")
+
+
 def extract_username_from_profile(profile: dict[str, str]) -> str:
     """Extract a username or user stub from an IAM profile response."""
-    for key in ("preferred_username", "username", "name"):
+    for key in ("preferred_username", "username", "userName", "name", "displayName"):
         value = profile.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+
+    if isinstance(profile.get("name"), dict):
+        for key in ("formatted", "givenName", "familyName"):
+            value = profile["name"].get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
 
     sub = profile.get("sub")
     if isinstance(sub, str) and sub.strip():
@@ -129,7 +153,7 @@ def get_group_gid(group_name: str) -> int:
         raise OAuth2AuthenticationError(f"Group '{group_name}' was not found") from exc
 
 
-def get_vospace_properties(access_token: str, project_name: str, base_url: str | None = None) -> dict[str, str]:
+def get_vospace_properties(access_token: str, project_name: str, base_url: Optional[str] = None) -> dict[str, str]:
     """Query the VP Space API for a project's creator and groupwrite values."""
     vp_space_base_url = base_url or os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL") or DEFAULT_VP_SPACE_BASE_URL
     try:
@@ -176,7 +200,7 @@ def save_tokens_to_cache(tokens: dict[str, str], expires_in: int = 3600) -> None
     print(f"Tokens cached until {expiration}")
 
 
-def load_tokens_from_cache() -> dict[str, str] | None:
+def load_tokens_from_cache() -> Optional[dict[str, str]]:
     """Load authentication tokens from cache if valid.
 
     Returns:
@@ -239,8 +263,9 @@ def initiate_device_code_flow() -> dict[str, str]:
     """
     try:
         # Request device and user codes from authn service
-        response = requests.get(
-            f"{AUTHN_BASE_URL}/login/device",
+        response = requests.post(
+            f"{AUTHN_BASE_URL}/devicecode",
+            data={"client_id": os.environ.get("CONJUNCTION_CLIENT_ID", "")},
             timeout=10,
         )
         response.raise_for_status()
@@ -329,7 +354,7 @@ def poll_for_authentication(
     raise OAuth2AuthenticationError("Authorization timeout. Please try again.")
 
 
-def parse_wrapped_error_response(error_data: dict) -> tuple[str | None, str | None]:
+def parse_wrapped_error_response(error_data: dict) -> Tuple[Optional[str], Optional[str]]:
     """Parse error response that may be wrapped by the API.
 
     Args:
