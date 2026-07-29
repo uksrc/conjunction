@@ -132,35 +132,40 @@ def main() -> int:
     if "VP_SPACE_BASE_URL" in config:
         os.environ["CONJUNCTION_VP_SPACE_BASE_URL"] = config["VP_SPACE_BASE_URL"]
 
-    try:
-        tokens = authenticate()
-    except OAuth2AuthenticationError as exc:
-        log_error(f"OAuth authentication failed: {exc}")
-        return 1
+    if option == "--mount":
+        try:
+            tokens = authenticate()
+        except OAuth2AuthenticationError as exc:
+            log_error(f"OAuth authentication failed: {exc}")
+            return 1
 
-    os.environ["CONJUNCTION_DATA_MANAGEMENT_TOKEN"] = tokens["data_management_token"]
-    os.environ["CONJUNCTION_SITE_CAPABILITIES_TOKEN"] = tokens["site_capabilities_token"]
-    print("OAuth tokens acquired successfully")
+        os.environ["CONJUNCTION_DATA_MANAGEMENT_TOKEN"] = tokens["data_management_token"]
+        os.environ["CONJUNCTION_SITE_CAPABILITIES_TOKEN"] = tokens["site_capabilities_token"]
+        print("OAuth tokens acquired successfully")
 
-    try:
-        profile = get_user_profile(tokens["iam_access_token"])
-        iam_username = extract_username_from_profile(profile)
-    except OAuth2AuthenticationError as exc:
-        log_error(f"IAM profile lookup failed: {exc}")
-        return 1
+        try:
+            profile = get_user_profile(tokens["iam_access_token"])
+            iam_username = extract_username_from_profile(profile)
+        except OAuth2AuthenticationError as exc:
+            log_error(f"IAM profile lookup failed: {exc}")
+            return 1
 
-    os.environ["CONJUNCTION_IAM_USERNAME"] = iam_username
-    print(f"Resolved IAM username: {iam_username}")
+        os.environ["CONJUNCTION_IAM_USERNAME"] = iam_username
+        print(f"Resolved IAM username: {iam_username}")
 
-    try:
-        uid, gid = get_posix_uid_gid(tokens["iam_access_token"], iam_username, config)
-    except OAuth2AuthenticationError as exc:
-        log_error(f"POSIX mapper lookup failed: {exc}")
-        return 1
+        try:
+            uid, gid = get_posix_uid_gid(tokens["iam_access_token"], iam_username, config)
+        except OAuth2AuthenticationError as exc:
+            log_error(f"POSIX mapper lookup failed: {exc}")
+            return 1
 
-    os.environ["CONJUNCTION_POSIX_UID"] = str(uid) if uid is not None else ""
-    os.environ["CONJUNCTION_POSIX_GID"] = str(gid) if gid is not None else ""
-    print(f"Resolved POSIX UID/GID: {uid}/{gid}")
+        os.environ["CONJUNCTION_POSIX_UID"] = str(uid) if uid is not None else ""
+        os.environ["CONJUNCTION_POSIX_GID"] = str(gid) if gid is not None else ""
+        print(f"Resolved POSIX UID/GID: {uid}/{gid}")
+    else:
+        iam_username = ""
+        uid = None
+        gid = None
 
     # VP Space lookup disabled until the endpoint is configured correctly.
     # try:
@@ -185,7 +190,7 @@ def main() -> int:
     # print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
     # print(f"Resolved group name: {group_name}")
     # print(f"Resolved group GID: {group_gid}")
-    print("Skipping VP Space lookup until the endpoint is configured correctly.")
+    # print("Skipping VP Space lookup until the endpoint is configured correctly.")
 
     sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
     target_dir = Path("/home") / sudo_user / "projects" / project_name
@@ -209,7 +214,7 @@ def main() -> int:
 
         create_for_user = str(uid) if uid is not None else iam_username
         create_for_group = str(gid) if gid is not None else ""
-        print({"uid": uid, "gid": gid, "create_for_user": create_for_user, "create_for_group": create_for_group})
+        print(f"Mounting {source_dir} to {target_dir} with bindfs...")
         run_command(
             [
                 "bindfs",
@@ -224,7 +229,7 @@ def main() -> int:
         )
     else:
         run_command(["umount", str(target_dir)], check=False)
-
+        print(f"Unmounted {target_dir} successfully")
     return 0
 
 
