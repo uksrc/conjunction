@@ -7,6 +7,10 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
+
+import requests
 
 
 CONFIG_PATHS = [Path("/etc/conjunction/conjunction.config"), Path("/usr/local/etc/conjunction/conjunction.config"), Path(__file__).resolve().with_name("conjunction.config")]
@@ -18,7 +22,6 @@ from oauth import (
     extract_username_from_profile,
     get_group_gid,
     get_user_profile,
-    get_vospace_properties,
 )
 
 
@@ -63,6 +66,41 @@ def load_config() -> dict[str, str]:
         break
 
     return config
+
+
+def get_posix_uid_gid(access_token: str, iam_username: str, config: dict[str, str]) -> tuple[Optional[int], Optional[int]]:
+    base_url = config.get("POSIX_MAPPER_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        raise OAuth2AuthenticationError("POSIX_MAPPER_BASE_URL is required in conjunction.config")
+
+    url = f"{base_url}/uid?user={quote(iam_username)}"
+    try:
+        response = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        response.raise_for_status()
+    except requests.exceptions.RequestException as exc:
+        raise OAuth2AuthenticationError(f"Failed to query POSIX mapper: {exc}") from exc
+
+    text = response.text.strip()
+    uid = None
+    gid = None
+
+    if text:
+        parts = text.split(":")
+        if len(parts) >= 4:
+            try:
+                uid = int(parts[2])
+            except ValueError:
+                uid = None
+            try:
+                gid = int(parts[3])
+            except ValueError:
+                gid = None
+
+    return uid, gid
 
 
 def main() -> int:
@@ -115,27 +153,39 @@ def main() -> int:
     print(f"Resolved IAM username: {iam_username}")
 
     try:
-        vp_properties = get_vospace_properties(
-            tokens["iam_access_token"],
-            project_name,
-            os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL"),
-        )
-        creator = vp_properties.get("ivo://ivoa.net/vospace/core#creator", "")
-        groupwrite = vp_properties.get("ivo://ivoa.net/vospace/core#groupwrite", "")
-        group_name = extract_group_name_from_groupwrite(groupwrite)
-        group_gid = get_group_gid(group_name)
+        uid, gid = get_posix_uid_gid(tokens["iam_access_token"], iam_username, config)
     except OAuth2AuthenticationError as exc:
-        log_error(f"VP Space lookup failed: {exc}")
+        log_error(f"POSIX mapper lookup failed: {exc}")
         return 1
 
-    os.environ["CONJUNCTION_VOSPACE_CREATOR"] = creator
-    os.environ["CONJUNCTION_VOSPACE_GROUPWRITE"] = groupwrite
-    os.environ["CONJUNCTION_VOSPACE_GROUP_NAME"] = group_name
-    os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid)
-    print(f"Resolved VP Space creator: {creator or '(none)'}")
-    print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
-    print(f"Resolved group name: {group_name}")
-    print(f"Resolved group GID: {group_gid}")
+    os.environ["CONJUNCTION_POSIX_UID"] = str(uid) if uid is not None else ""
+    os.environ["CONJUNCTION_POSIX_GID"] = str(gid) if gid is not None else ""
+    print(f"Resolved POSIX UID/GID: {uid}/{gid}")
+
+    # VP Space lookup disabled until the endpoint is configured correctly.
+    # try:
+    #     vp_properties = get_vospace_properties(
+    #         tokens["iam_access_token"],
+    #         project_name,
+    #         os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL"),
+    #     )
+    #     creator = vp_properties.get("ivo://ivoa.net/vospace/core#creator", "")
+    #     groupwrite = vp_properties.get("ivo://ivoa.net/vospace/core#groupwrite", "")
+    #     group_name = extract_group_name_from_groupwrite(groupwrite)
+    #     group_gid = get_group_gid(group_name)
+    # except OAuth2AuthenticationError as exc:
+    #     log_error(f"VP Space lookup failed: {exc}")
+    #     return 1
+
+    # os.environ["CONJUNCTION_VOSPACE_CREATOR"] = creator
+    # os.environ["CONJUNCTION_VOSPACE_GROUPWRITE"] = groupwrite
+    # os.environ["CONJUNCTION_VOSPACE_GROUP_NAME"] = group_name
+    # os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid)
+    # print(f"Resolved VP Space creator: {creator or '(none)'}")
+    # print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
+    # print(f"Resolved group name: {group_name}")
+    # print(f"Resolved group GID: {group_gid}")
+    print("Skipping VP Space lookup until the endpoint is configured correctly.")
 
     sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
     target_dir = Path("/home") / sudo_user / "projects" / project_name
@@ -157,7 +207,9 @@ def main() -> int:
         run_command(["chown", "-R", f"{sudo_user}:{sudo_user}", str(target_dir)])
         run_command(["chmod", "600", str(target_dir)])
 
-        create_for_user = iam_username
+        create_for_user = str(uid) if uid is not None else iam_username
+        create_for_group = str(gid) if gid is not None else ""
+        print({"uid": uid, "gid": gid, "create_for_user": create_for_user, "create_for_group": create_for_group})
         run_command(
             [
                 "bindfs",
@@ -165,7 +217,7 @@ def main() -> int:
                 f"--force-user={sudo_user}",
                 f"--force-group={sudo_user}",
                 f"--create-for-user={create_for_user}",
-                f"--create-for-group={group_gid}",
+                f"--create-for-group={create_for_group}",
                 str(source_dir),
                 str(target_dir),
             ]

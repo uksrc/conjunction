@@ -139,12 +139,6 @@ def authenticate(use_cache: bool = True) -> dict[str, str]:
         if expired_tokens:
             if validate_cached_tokens(expired_tokens):
                 return expired_tokens
-            if expired_tokens.get("refresh_token"):
-                try:
-                    token_data = refresh_auth_token(expired_tokens["refresh_token"])
-                    return finalize_token_data(token_data)
-                except OAuth2AuthenticationError as exc:
-                    print(f"Refresh failed, falling back to a full authentication flow: {exc}")
 
     # Perform full authentication flow
     device_info = initiate_device_code_flow()
