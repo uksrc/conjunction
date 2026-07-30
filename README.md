@@ -72,7 +72,7 @@ sudo python3 conjunction-python/conjunction.py --mount example-project
 1. The CLI loads deployment config and ensures it is running as root.
 2. On `--mount`, it authenticates using OAuth2 device code flow via `oauth.py`.
 3. It fetches the IAM user profile and resolves an IAM username.
-4. It queries a POSIX mapper endpoint for UID/GID.
+4. It queries a POSIX mapper endpoint for UID/GID. (This will be replaced with KeyCloak integration.)
 5. It bind-mounts `/skaprojects/<project_name>` into `/home/<sudo_user>/projects/<project_name>` using `bindfs`.
 6. On `--unmount`, it unmounts the target mountpoint.
 
