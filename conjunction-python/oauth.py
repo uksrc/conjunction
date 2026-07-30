@@ -11,6 +11,7 @@ import binascii
 import grp
 import json
 import os
+import pwd
 import re
 import time
 from datetime import datetime, timedelta
@@ -266,6 +267,7 @@ def save_tokens_to_cache(tokens: dict[str, str], expires_in: int = 3600) -> None
     # Write to cache with secure permissions
     cache_path.write_text(json.dumps(cache_data, indent=2))
     os.chmod(cache_path, 0o600)  # Read/write for owner only
+    set_path_owner_to_sudo_user(cache_path)
     print(f"Tokens cached until {expiration}")
 
 
@@ -357,11 +359,48 @@ def get_token_cache_path() -> Path:
             user_home = Path("/home") / sudo_user
             config_dir = user_home / ".config" / "conjuction"
             config_dir.mkdir(parents=True, exist_ok=True)
+            set_path_owner_to_sudo_user(config_dir)
             return config_dir / "tokens.json"
 
     config_dir = Path.home() / ".config" / "conjuction"
     config_dir.mkdir(parents=True, exist_ok=True)
     return config_dir / "tokens.json"
+
+
+def _get_sudo_user_ids() -> Optional[tuple[int, int]]:
+    if os.geteuid() != 0:
+        return None
+
+    sudo_uid = os.environ.get("SUDO_UID")
+    sudo_gid = os.environ.get("SUDO_GID")
+    if sudo_uid is not None and sudo_gid is not None:
+        try:
+            return int(sudo_uid), int(sudo_gid)
+        except ValueError:
+            pass
+
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        try:
+            pw = pwd.getpwnam(sudo_user)
+            return pw.pw_uid, pw.pw_gid
+        except KeyError:
+            pass
+
+    return None
+
+
+def set_path_owner_to_sudo_user(path: Path) -> None:
+    """Set the owner and group to the original sudo user when running as root."""
+    ids = _get_sudo_user_ids()
+    if ids is None:
+        return
+
+    uid, gid = ids
+    try:
+        os.chown(path, uid, gid)
+    except OSError:
+        pass
 
 
 def initiate_device_code_flow() -> dict[str, Any]:
