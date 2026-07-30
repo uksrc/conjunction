@@ -218,11 +218,16 @@ def main() -> int:
         run_command(
             [
                 "bindfs",
-                f"--perms=0700",
-                f"--force-user={sudo_user}",
-                f"--force-group={sudo_user}",
+                f"-o",
+                f"allow_other",
+                f"--perms=0777",
+                f"--delete-deny",
+                f"--rename-deny",
+                f"--chmod-deny",
                 f"--create-for-user={create_for_user}",
                 f"--create-for-group={create_for_group}",
+                f"--delete-deny",
+                f"--rename-deny",
                 str(source_dir),
                 str(target_dir),
             ]
