@@ -17,7 +17,14 @@
 
 ## Installation
 
-There is no packaged installer in this repository. Use the files directly from `conjunction-python/`.
+Run:
+```bash
+git clone https://github.com/uksrc/conjunction
+cd conjunction
+python -m venv .venv
+source .venv/bin/activate
+pip install .
+```
 
 ## Configuration
 
@@ -52,19 +59,19 @@ Run the script as root or via `sudo`.
 Mount a project:
 
 ```bash
-sudo python3 conjunction-python/conjunction.py --mount <project_name>
+sudo conjunction --mount <project_name>
 ```
 
 Unmount a project:
 
 ```bash
-sudo python3 conjunction-python/conjunction.py --unmount <project_name>
+sudo conjunction --unmount <project_name>
 ```
 
 Example:
 
 ```bash
-sudo python3 conjunction-python/conjunction.py --mount example-project
+sudo conjunction --mount example-project
 ```
 
 ## How it works

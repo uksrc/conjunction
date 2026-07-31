@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "conjunction"
+version = "0.1.0"
+description = "A tool for mounting and unmounting files with bindfs"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "requests>=2.34.2, <3.0.0",
+]
+
+[project.scripts]
+conjunction = "conjunction.conjunction:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}

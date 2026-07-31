@@ -15,7 +15,7 @@ import requests
 
 CONFIG_PATHS = [Path("/etc/conjunction/conjunction.config"), Path("/usr/local/etc/conjunction/conjunction.config"), Path(__file__).resolve().with_name("conjunction.config")]
 
-from oauth import (
+from conjunction.oauth import (
     OAuth2AuthenticationError,
     authenticate,
     extract_group_name_from_groupwrite,
@@ -237,8 +237,7 @@ def main() -> int:
         print(f"Unmounted {target_dir} successfully")
     return 0
 
-
-if __name__ == "__main__":
+def cli() -> int:
     try:
         raise SystemExit(main())
     except KeyboardInterrupt:
@@ -249,3 +248,6 @@ if __name__ == "__main__":
     except RuntimeError as exc:
         log_error(str(exc))
         raise SystemExit(1)
+
+if __name__ == "__main__":
+    cli()
