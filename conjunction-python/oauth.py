@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional, Tuple
 import requests
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 
@@ -149,12 +150,17 @@ def authenticate(use_cache: bool = True) -> dict[str, str]:
     return finalize_token_data(token_data)
 
 
-def get_user_profile(access_token: str) -> dict[str, str]:
+def get_user_profile(access_token: str, client_id: Optional[str] = None) -> dict[str, str]:
     """Fetch the authenticated user's profile from SKA-IAM."""
+    params: dict[str, str] = {}
+    if isinstance(client_id, str) and client_id.strip():
+        params["client_id"] = client_id.strip()
+
     try:
         response = requests.get(
             USER_PROFILE_ENDPOINT,
             headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
             timeout=10,
         )
         response.raise_for_status()
@@ -166,12 +172,17 @@ def get_user_profile(access_token: str) -> dict[str, str]:
         raise OAuth2AuthenticationError(f"Failed to fetch user profile: {exc}")
 
 
-def get_user_profile_alt(access_token: str) -> dict[str, str]:
+def get_user_profile_alt(access_token: str, client_id: Optional[str] = None) -> dict[str, str]:
     """Fallback profile lookup for environments that expose the IAM account API at a different base URL."""
+    params: dict[str, str] = {}
+    if isinstance(client_id, str) and client_id.strip():
+        params["client_id"] = client_id.strip()
+
     try:
         response = requests.get(
             f"{AUTHN_BASE_URL.rstrip('/')}/account/me",
             headers={"Authorization": f"Bearer {access_token}"},
+            params=params,
             timeout=10,
         )
         response.raise_for_status()
@@ -215,6 +226,190 @@ def extract_group_name_from_groupwrite(groupwrite: str) -> str:
     return match.group(1).split("/")[-1]
 
 
+def extract_account_id_from_profile(profile: dict[str, str]) -> Optional[str]:
+    """Extract an IAM account identifier from a profile payload."""
+    for key in ("sub", "id", "account_id", "user_id", "uuid"):
+        value = profile.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    return None
+
+
+def check_user_group_access(
+    access_token: str,
+    profile: dict[str, str],
+    group_name: str,
+    client_id: Optional[str] = None,
+) -> None:
+    """Ensure the authenticated user can access the requested IAM managed group."""
+    if not group_name:
+        raise OAuth2AuthenticationError("No IAM group name provided")
+
+    normalized_group = group_name.strip().lower()
+
+    account_id = extract_account_id_from_profile(profile)
+    if not account_id:
+        raise OAuth2AuthenticationError("Unable to determine IAM account ID for group access check")
+
+    encoded_group = quote(group_name, safe="")
+    print(f"Checking IAM managed-group access for VO project '{group_name}' (encoded: '{encoded_group}')...")
+    print(f"Requested IAM group name: '{group_name}'")
+
+    candidate_urls = [
+        f"{AUTHN_BASE_URL.rstrip('/')}/iam/account/{account_id}/managed-groups",
+        # f"{AUTHN_BASE_URL.rstrip('/')}/account/{account_id}/managed-groups",
+    ]
+
+    last_error: Optional[OAuth2AuthenticationError] = None
+    for url in candidate_urls:
+        try:
+            params = {}
+            if client_id:
+                params["client_id"] = client_id
+
+            response = requests.get(
+                url,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+                timeout=10,
+            )
+            if response.status_code == 200:
+                payload = response.json() if hasattr(response, "json") else None
+                if _group_access_payload_matches(payload, normalized_group):
+                    return
+                last_error = OAuth2AuthenticationError(
+                    f"User is not authorized to access IAM group '{group_name}'"
+                )
+                continue
+            if response.status_code in (403, 404):
+                last_error = OAuth2AuthenticationError(
+                    f"User is not authorized to access IAM group '{group_name}'"
+                )
+                continue
+            response.raise_for_status()
+        except requests.exceptions.RequestException as exc:
+            last_error = OAuth2AuthenticationError(
+                f"Failed to check IAM managed-group access for '{group_name}': {exc}"
+            )
+            continue
+
+    if last_error is not None:
+        raise last_error
+
+    raise OAuth2AuthenticationError(
+        f"Unable to verify access to IAM group '{group_name}'"
+    )
+
+
+def _group_access_payload_matches(payload: Any, normalized_group: str) -> bool:
+    if payload is None:
+        return False
+
+    if isinstance(payload, dict):
+        candidates = []
+        if isinstance(payload.get("managedGroups"), list):
+            candidates.extend(payload["managedGroups"])
+        elif isinstance(payload.get("managed_groups"), list):
+            candidates.extend(payload["managed_groups"])
+        elif isinstance(payload.get("groups"), list):
+            candidates.extend(payload["groups"])
+        elif isinstance(payload.get("items"), list):
+            candidates.extend(payload["items"])
+        elif isinstance(payload.get("data"), dict):
+            candidates.extend([payload["data"]])
+
+        if candidates:
+            print("Managed groups available:")
+            for item in candidates:
+                if isinstance(item, dict):
+                    values = _extract_group_candidate_values(item)
+                    if values:
+                        for value in values:
+                            print(f"  - {value}")
+                    else:
+                        print("  - <no group name found>")
+                elif isinstance(item, str):
+                    print(f"  - {item}")
+
+        return any(_group_matches_name(item, normalized_group) for item in candidates)
+
+    if isinstance(payload, list):
+        return any(_group_matches_name(item, normalized_group) for item in payload)
+
+    return False
+
+
+def _extract_group_candidate_values(group_entry: Any) -> list[str]:
+    values: list[str] = []
+
+    if isinstance(group_entry, str):
+        stripped = group_entry.strip()
+        if stripped:
+            values.append(stripped)
+        return values
+
+    if not isinstance(group_entry, dict):
+        return values
+
+    for key in ("name", "group_name", "groupName", "displayName", "display_name", "fullName", "full_name", "path", "id", "groupId", "value"):
+        value = group_entry.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+
+    for key in ("parent", "parent_group", "parentGroup", "group"):
+        value = group_entry.get(key)
+        if isinstance(value, dict):
+            values.extend(_extract_group_candidate_values(value))
+        elif isinstance(value, str) and value.strip():
+            values.append(value.strip())
+
+    return values
+
+
+def _group_matches_name(group_entry: Any, normalized_group: str) -> bool:
+    if isinstance(group_entry, str):
+        return _value_matches_group_name(group_entry, normalized_group)
+
+    if not isinstance(group_entry, dict):
+        return False
+
+    for key in ("name", "group_name", "groupName", "displayName", "display_name", "fullName", "full_name", "path", "id", "groupId", "value"):
+        value = group_entry.get(key)
+        if _value_matches_group_name(value, normalized_group):
+            return True
+
+    for key in ("parent", "parent_group", "parentGroup", "group"):
+        value = group_entry.get(key)
+        if isinstance(value, dict):
+            if _group_matches_name(value, normalized_group):
+                return True
+        elif _value_matches_group_name(value, normalized_group):
+            return True
+
+    return False
+
+
+def _value_matches_group_name(value: Any, normalized_group: str) -> bool:
+    if not isinstance(value, str):
+        return False
+
+    normalized_value = value.strip().lower()
+    if not normalized_value or not normalized_group:
+        return False
+
+    if normalized_value == normalized_group:
+        return True
+
+    if normalized_value.endswith(f"/{normalized_group}"):
+        return True
+
+    if normalized_group.endswith(f"/{normalized_value}"):
+        return True
+
+    return False
+
+
 def get_group_gid(group_name: str) -> int:
     """Resolve a Unix group name to its GID."""
     try:
@@ -242,10 +437,21 @@ def get_vospace_properties(access_token: str, project_name: str, base_url: Optio
         raise OAuth2AuthenticationError(f"Failed to parse VP Space response: {exc}")
 
     properties: dict[str, str] = {}
-    for prop in root.findall("{*}property"):
+    for prop in root.iter():
+        tag = prop.tag
+        if not isinstance(tag, str):
+            continue
+        local_name = tag.rsplit("}", 1)[-1]
+        if local_name != "property":
+            continue
+
         uri = prop.attrib.get("uri", "")
-        if uri and prop.text and prop.text.strip():
-            properties[uri] = prop.text.strip()
+        if not uri:
+            continue
+
+        text = "".join(prop.itertext()).strip()
+        if text:
+            properties[uri] = text
 
     return properties
 
