@@ -18,10 +18,12 @@ CONFIG_PATHS = [Path("/etc/conjunction/conjunction.config"), Path("/usr/local/et
 from oauth import (
     OAuth2AuthenticationError,
     authenticate,
+    check_user_group_access,
     extract_group_name_from_groupwrite,
     extract_username_from_profile,
     get_group_gid,
     get_user_profile,
+    get_vospace_properties,
 )
 
 
@@ -62,7 +64,11 @@ def load_config() -> dict[str, str]:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 key, value = line.split("=", 1)
-                config[key.strip()] = value.strip()
+                key = key.strip()
+                value = value.strip()
+                config[key] = value
+                if key.startswith("CONJUNCTION_"):
+                    os.environ[key] = value
         break
 
     return config
@@ -167,30 +173,31 @@ def main() -> int:
         uid = None
         gid = None
 
-    # VP Space lookup disabled until the endpoint is configured correctly.
-    # try:
-    #     vp_properties = get_vospace_properties(
-    #         tokens["iam_access_token"],
-    #         project_name,
-    #         os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL"),
-    #     )
-    #     creator = vp_properties.get("ivo://ivoa.net/vospace/core#creator", "")
-    #     groupwrite = vp_properties.get("ivo://ivoa.net/vospace/core#groupwrite", "")
-    #     group_name = extract_group_name_from_groupwrite(groupwrite)
-    #     group_gid = get_group_gid(group_name)
-    # except OAuth2AuthenticationError as exc:
-    #     log_error(f"VP Space lookup failed: {exc}")
-    #     return 1
+    try:
+        vp_properties = get_vospace_properties(
+            tokens["iam_access_token"],
+            project_name,
+            os.environ.get("CONJUNCTION_VP_SPACE_BASE_URL"),
+        )
+        creator = vp_properties.get("ivo://ivoa.net/vospace/core#creator", "")
+        groupwrite = vp_properties.get("ivo://ivoa.net/vospace/core#groupwrite", "")
+        group_name = extract_group_name_from_groupwrite(groupwrite)
+        if option == "--mount" and "profile" in locals():
+            check_user_group_access(profile, project_name)
+        group_gid = get_group_gid(group_name)
+    except OAuth2AuthenticationError as exc:
+        log_error(f"VP Space lookup failed: {exc}")
+        return 1
 
-    # os.environ["CONJUNCTION_VOSPACE_CREATOR"] = creator
-    # os.environ["CONJUNCTION_VOSPACE_GROUPWRITE"] = groupwrite
-    # os.environ["CONJUNCTION_VOSPACE_GROUP_NAME"] = group_name
-    # os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid)
-    # print(f"Resolved VP Space creator: {creator or '(none)'}")
-    # print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
-    # print(f"Resolved group name: {group_name}")
-    # print(f"Resolved group GID: {group_gid}")
-    # print("Skipping VP Space lookup until the endpoint is configured correctly.")
+    os.environ["CONJUNCTION_VOSPACE_CREATOR"] = creator
+    os.environ["CONJUNCTION_VOSPACE_GROUPWRITE"] = groupwrite
+    os.environ["CONJUNCTION_VOSPACE_GROUP_NAME"] = group_name
+    os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid)
+    print(f"Resolved VP Space creator: {creator or '(none)'}")
+    print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
+    print(f"Resolved IAM group name: gateway-projects/{project_name}")
+    print(f"Resolved VP Space group name: {group_name}")
+    print(f"Resolved group GID: {group_gid}")
 
     sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
     target_dir = Path("/home") / sudo_user / "projects" / project_name

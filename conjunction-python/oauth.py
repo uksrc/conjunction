@@ -215,6 +215,47 @@ def extract_group_name_from_groupwrite(groupwrite: str) -> str:
     return match.group(1).split("/")[-1]
 
 
+def extract_groups_from_profile(profile: dict[str, Any]) -> list[str]:
+    """Extract IAM group names from the userinfo profile payload."""
+    groups: list[str] = []
+    raw_groups = profile.get("groups")
+    if isinstance(raw_groups, list):
+        for value in raw_groups:
+            if isinstance(value, str) and value.strip():
+                groups.append(value.strip())
+    return groups
+
+
+def check_user_group_access(profile: dict[str, Any], project_name: str) -> None:
+    """Ensure the authenticated user belongs to the requested project group from IAM userinfo."""
+    if not project_name:
+        raise OAuth2AuthenticationError("No project name provided")
+
+    iam_group_name = f"gateway-projects/{project_name.strip()}"
+    iam_groups = extract_groups_from_profile(profile)
+
+    if not iam_groups:
+        raise OAuth2AuthenticationError(
+            f"User is not authorized to access project '{project_name}' because no IAM groups were returned"
+        )
+
+    normalized_project = project_name.strip().lower()
+    for candidate in iam_groups:
+        normalized_candidate = candidate.strip().lower()
+        if normalized_candidate == normalized_project:
+            return
+        if normalized_candidate == iam_group_name.lower():
+            return
+        if normalized_candidate.endswith(f"/{normalized_project}"):
+            return
+        if normalized_project.endswith(f"/{normalized_candidate}"):
+            return
+
+    raise OAuth2AuthenticationError(
+        f"User is not authorized to access project '{project_name}'"
+    )
+
+
 def get_group_gid(group_name: str) -> int:
     """Resolve a Unix group name to its GID."""
     try:
@@ -242,10 +283,18 @@ def get_vospace_properties(access_token: str, project_name: str, base_url: Optio
         raise OAuth2AuthenticationError(f"Failed to parse VP Space response: {exc}")
 
     properties: dict[str, str] = {}
-    for prop in root.findall("{*}property"):
+    for prop in root.iter():
+        tag = prop.tag
+        if not isinstance(tag, str):
+            continue
+        local_name = tag.rsplit("}", 1)[-1]
+        if local_name != "property":
+            continue
+
         uri = prop.attrib.get("uri", "")
-        if uri and prop.text and prop.text.strip():
-            properties[uri] = prop.text.strip()
+        text = "".join(prop.itertext()).strip()
+        if uri and text:
+            properties[uri] = text
 
     return properties
 
