@@ -184,7 +184,12 @@ def main() -> int:
         group_name = extract_group_name_from_groupwrite(groupwrite)
         if option == "--mount" and "profile" in locals():
             check_user_group_access(profile, project_name)
-        group_gid = get_group_gid(group_name)
+
+        try:
+            group_gid = get_group_gid(group_name)
+        except OAuth2AuthenticationError:
+            group_gid = None
+            print(f"No local Unix group found for VP Space group '{group_name}'; continuing without a group GID")
     except OAuth2AuthenticationError as exc:
         log_error(f"VP Space lookup failed: {exc}")
         return 1
@@ -192,12 +197,12 @@ def main() -> int:
     os.environ["CONJUNCTION_VOSPACE_CREATOR"] = creator
     os.environ["CONJUNCTION_VOSPACE_GROUPWRITE"] = groupwrite
     os.environ["CONJUNCTION_VOSPACE_GROUP_NAME"] = group_name
-    os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid)
+    os.environ["CONJUNCTION_VOSPACE_GROUP_GID"] = str(group_gid) if group_gid is not None else ""
     print(f"Resolved VP Space creator: {creator or '(none)'}")
     print(f"Resolved VP Space groupwrite: {groupwrite or '(none)'}")
     print(f"Resolved IAM group name: gateway-projects/{project_name}")
     print(f"Resolved VP Space group name: {group_name}")
-    print(f"Resolved group GID: {group_gid}")
+    print(f"Resolved group GID: {group_gid if group_gid is not None else '(none)'}")
 
     sudo_user = os.environ.get("SUDO_USER") or os.environ.get("USER") or getpass.getuser()
     target_dir = Path("/home") / sudo_user / "projects" / project_name
